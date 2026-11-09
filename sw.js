@@ -1,5 +1,5 @@
-const CACHE = 'tensaku-v3';
-const CORE = ['./', 'index.html', 'css/app.css', 'js/checks.js', 'js/ai.js', 'js/files.js', 'js/history.js', 'js/app.js',
+const CACHE = 'tensaku-v4';
+const CORE = ['./', 'index.html', 'css/app.css', 'js/files.js', 'js/ai.js', 'js/app.js', 'vendor/jszip/jszip.min.js',
   'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-180.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

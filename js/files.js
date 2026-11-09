@@ -1,20 +1,27 @@
-/* ファイルから本文を取り出す（Word / OpenDocument / PDF / テキスト）。すべて端末内で処理する */
+/* 添付ファイルを AI に渡せる形にする。
+   PDF と画像はそのまま送る（AI が直接読む）。Word / ODT は画面に出さずに中身だけ取り出して送る。 */
 (function () {
 'use strict';
+
+class ReadError extends Error {}
+const MB = 1024 * 1024;
 
 const loaded = {};
 function loadScript(src) {
   if (!loaded[src]) loaded[src] = new Promise((ok, ng) => {
     const s = document.createElement('script');
-    s.src = src; s.onload = ok; s.onerror = () => ng(new Error('読み取り用の部品を読み込めませんでした。ネット接続を確認してください。'));
+    s.src = src; s.onload = ok; s.onerror = () => ng(new ReadError('読み取り用の部品を読み込めませんでした。'));
     document.head.appendChild(s);
   });
   return loaded[src];
 }
+const toBase64 = buf => {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
 
-class ReadError extends Error {}
-
-/* ---------- Word（.docx） ---------- */
+/* ---------- Word ---------- */
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 function docxParagraphs(xml) {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -25,7 +32,7 @@ function docxParagraphs(xml) {
       for (const c of n.childNodes) {
         if (c.nodeType !== 1) continue;
         const ln = c.localName;
-        if (ln === 'del' || ln === 'rt' || ln === 'instrText' || ln === 'delText') continue; // 削除履歴・ルビ・フィールド命令は除く
+        if (ln === 'del' || ln === 'rt' || ln === 'instrText' || ln === 'delText') continue;
         if (ln === 't') t += c.textContent;
         else if (ln === 'tab') t += '　';
         else if (ln === 'br' || ln === 'cr') t += '\n';
@@ -33,24 +40,22 @@ function docxParagraphs(xml) {
         else if (ln !== 'p') walk(c);
       }
     };
-    walk(p);
-    out.push(t);
+    walk(p); out.push(t);
   }
   return out;
 }
-async function readDocx(buf) {
+async function docxText(buf) {
   await loadScript('vendor/jszip/jszip.min.js');
   let zip;
   try { zip = await window.JSZip.loadAsync(buf); } catch (_) { throw new ReadError('Wordファイルを開けませんでした。ファイルが壊れていないか確認してください。'); }
   const main = zip.file('word/document.xml');
   if (!main) throw new ReadError('Wordファイルの本文が見つかりませんでした。');
   let text = docxParagraphs(await main.async('string')).join('\n');
-  // 脚注・文末脚注（出典が書かれていることが多いので末尾に付ける）
-  for (const [f, label] of [['word/footnotes.xml', '脚注'], ['word/endnotes.xml', '文末脚注']]) {
+  for (const [f, tag, label] of [['word/footnotes.xml', 'footnote', '脚注'], ['word/endnotes.xml', 'endnote', '文末脚注']]) {
     const z = zip.file(f); if (!z) continue;
     const doc = new DOMParser().parseFromString(await z.async('string'), 'application/xml');
     const notes = [];
-    for (const n of doc.getElementsByTagNameNS(W, f.includes('foot') ? 'footnote' : 'endnote')) {
+    for (const n of doc.getElementsByTagNameNS(W, tag)) {
       const id = n.getAttributeNS(W, 'id'); if (+id <= 0) continue;
       const body = docxParagraphs(new XMLSerializer().serializeToString(n)).join(' ').trim();
       if (body) notes.push(`［注${id}］${body}`);
@@ -60,9 +65,9 @@ async function readDocx(buf) {
   return text;
 }
 
-/* ---------- OpenDocument（.odt） ---------- */
+/* ---------- OpenDocument ---------- */
 const TX = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0';
-async function readOdt(buf) {
+async function odtText(buf) {
   await loadScript('vendor/jszip/jszip.min.js');
   let zip;
   try { zip = await window.JSZip.loadAsync(buf); } catch (_) { throw new ReadError('ODTファイルを開けませんでした。'); }
@@ -80,93 +85,63 @@ async function readOdt(buf) {
         else if (c.localName === 'note') {
           const cit = c.getElementsByTagNameNS(TX, 'note-citation')[0];
           const id = cit ? cit.textContent : String(notes.length + 1);
-          const body = [...c.getElementsByTagNameNS(TX, 'p')].map(inline).join(' ').trim();
-          notes.push(`［注${id}］${body}`); t += `［注${id}］`;
+          notes.push(`［注${id}］` + [...c.getElementsByTagNameNS(TX, 'p')].map(inline).join(' ').trim());
+          t += `［注${id}］`;
         } else t += inline(c);
       } else if (c.nodeType === 1) t += inline(c);
     }
     return t;
   };
-  const walk = n => {
-    for (const c of n.childNodes) {
-      if (c.nodeType !== 1) continue;
-      if (c.namespaceURI === TX && (c.localName === 'p' || c.localName === 'h')) paras.push(inline(c));
-      else walk(c);
-    }
-  };
-  const body = doc.getElementsByTagNameNS('urn:oasis:names:tc:opendocument:xmlns:office:1.0', 'text')[0] || doc.documentElement;
-  walk(body);
+  const walk = n => { for (const c of n.childNodes) if (c.nodeType === 1) { if (c.namespaceURI === TX && (c.localName === 'p' || c.localName === 'h')) paras.push(inline(c)); else walk(c); } };
+  walk(doc.getElementsByTagNameNS('urn:oasis:names:tc:opendocument:xmlns:office:1.0', 'text')[0] || doc.documentElement);
   let text = paras.join('\n');
   if (notes.length) text += '\n\n【脚注】\n' + notes.join('\n');
   return text;
 }
 
-/* ---------- PDF ---------- */
-const CJK = '　-ヿ㐀-鿿＀-￯';
-async function readPdf(buf) {
-  await loadScript('vendor/pdfjs/pdf.min.js');
-  const lib = window.pdfjsLib;
-  lib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
-  let pdf;
-  try { pdf = await lib.getDocument({ data: new Uint8Array(buf), cMapUrl: 'vendor/pdfjs/cmaps/', cMapPacked: true }).promise; }
-  catch (e) {
-    if (e && e.name === 'PasswordException') throw new ReadError('パスワード付きのPDFは読み取れません。');
-    throw new ReadError('PDFを開けませんでした。ファイルが壊れていないか確認してください。');
-  }
-  const lines = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const tc = await page.getTextContent();
-    let cur = '', lastY = null;
-    for (const it of tc.items) {
-      if (!('str' in it)) continue;
-      const y = it.transform ? Math.round(it.transform[5]) : null;
-      if (lastY !== null && y !== null && Math.abs(y - lastY) > 2 && cur) { lines.push(cur); cur = ''; }
-      cur += it.str; lastY = y;
-      if (it.hasEOL) { lines.push(cur); cur = ''; lastY = null; }
-    }
-    if (cur) lines.push(cur);
-    lines.push('\f'); // ページ区切り
-  }
-  // 行を段落に組み直す
-  const tidy = l => l.replace(new RegExp(`([${CJK}])\\s+(?=[${CJK}A-Za-z0-9])`, 'g'), '$1')
-    .replace(new RegExp(`([A-Za-z0-9])\\s+(?=[${CJK}])`, 'g'), '$1').trim();
-  const clean = lines.map(l => l === '\f' ? l : tidy(l))
-    .filter(l => l === '\f' || (l && !/^[-–—]?\s*\d{1,3}\s*[-–—]?$/.test(l) && !/^\d{1,3}\s*\/\s*\d{1,3}$/.test(l)));
-  const lens = clean.filter(l => l !== '\f').map(l => l.length).sort((a, b) => a - b);
-  const full = lens.length ? lens[Math.floor(lens.length * 0.75)] : 40;
-  let out = '', prev = '';
-  for (const l of clean) {
-    if (l === '\f') continue;
-    if (!out) out = l;
-    else {
-      const prevEnds = /[。．！？!?」』）):：]$/.test(prev) || prev.length < full * 0.7;
-      const startsNew = /^(?:[　\s]|[0-9０-９]+[.．、)）]|第[一二三四五六七八九十0-9]+|[①-⑳]|・|【|参考文献|引用文献)/.test(l);
-      out += (prevEnds || startsNew) ? '\n' + l : (/[A-Za-z0-9,.]$/.test(prev) && /^[A-Za-z0-9]/.test(l) ? ' ' : '') + l;
-    }
-    prev = l;
-  }
-  if (!out.replace(/\s/g, '')) throw new ReadError('このPDFには文字情報がありません（スキャン画像のPDFは読み取れません）。元のWordファイルを使うか、文字を選択できるPDFにしてください。');
-  return out;
+/* ---------- 画像（大きい写真は縮小してから送る） ---------- */
+function loadImage(file) {
+  return new Promise((ok, ng) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { ok(img); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+    img.onerror = () => { URL.revokeObjectURL(url); ng(new ReadError('この画像を開けませんでした。JPEG・PNG・WebP で保存し直してください。')); };
+    img.src = url;
+  });
+}
+async function imageData(file) {
+  const img = await loadImage(file);
+  const max = 2000;
+  const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  const url = c.toDataURL('image/jpeg', 0.88);
+  const t = document.createElement('canvas'); const ts = 160 / Math.max(c.width, c.height);
+  t.width = Math.round(c.width * ts); t.height = Math.round(c.height * ts); t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
+  return { data: url.split(',')[1], mediaType: 'image/jpeg', thumb: t.toDataURL('image/jpeg', 0.8) };
 }
 
-/* ---------- 入口 ---------- */
-async function read(file) {
-  const name = file.name.toLowerCase();
-  const ext = name.slice(name.lastIndexOf('.') + 1);
-  if (file.size > 30 * 1024 * 1024) throw new ReadError('ファイルが大きすぎます（30MBまで）。');
-  if (ext === 'txt' || ext === 'md' || ext === 'text') return normalize(await file.text());
-  if (ext === 'doc') throw new ReadError('古いWord形式（.doc）は読み取れません。Wordで「名前を付けて保存」→「Word文書（.docx）」にしてから開いてください。');
-  if (ext === 'pages') throw new ReadError('Pages形式は読み取れません。Pagesの「書き出す」から Word（.docx）か PDF にしてください。');
-  const buf = await file.arrayBuffer();
-  if (ext === 'docx' || ext === 'docm' || ext === 'dotx') return normalize(await readDocx(buf));
-  if (ext === 'odt') return normalize(await readOdt(buf));
-  if (ext === 'pdf') return normalize(await readPdf(buf));
-  throw new ReadError('対応していない形式です。Word（.docx）、PDF、OpenDocument（.odt）、テキスト（.txt）に対応しています。');
-}
-function normalize(t) {
-  return t.replace(/\r\n?/g, '\n').replace(/ /g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+/* ---------- 入口：添付1件を AI 用に用意する ---------- */
+async function prepare(file) {
+  const name = file.name || '貼り付けた画像';
+  const ext = (name.toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || '';
+  const base = { name, size: file.size };
+  if (file.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(ext)) {
+    if (file.size > 40 * MB) throw new ReadError(`「${name}」は大きすぎます（40MBまで）。`);
+    return { ...base, kind: 'image', ...(await imageData(file)) };
+  }
+  if (ext === 'pdf' || file.type === 'application/pdf') {
+    if (file.size > 24 * MB) throw new ReadError(`「${name}」は大きすぎます（PDFは24MBまで）。ページを分けるか、画質を下げて保存し直してください。`);
+    return { ...base, kind: 'pdf', mediaType: 'application/pdf', data: toBase64(await file.arrayBuffer()) };
+  }
+  if (['docx', 'docm', 'dotx'].includes(ext)) return { ...base, kind: 'text', label: 'Word', text: await docxText(await file.arrayBuffer()) };
+  if (ext === 'odt') return { ...base, kind: 'text', label: 'ODT', text: await odtText(await file.arrayBuffer()) };
+  if (['txt', 'md', 'text'].includes(ext) || file.type.startsWith('text/')) return { ...base, kind: 'text', label: 'テキスト', text: await file.text() };
+  if (ext === 'doc') throw new ReadError('古いWord形式（.doc）は読めません。Wordで「名前を付けて保存」→「Word文書（.docx）」か PDF にしてください。');
+  if (ext === 'pages') throw new ReadError('Pages形式は読めません。「書き出す」から Word（.docx）か PDF にしてください。');
+  throw new ReadError(`「${name}」は対応していない形式です。PDF・Word（.docx）・画像（写真）・テキストに対応しています。`);
 }
 
-window.RCFiles = { read, ReadError, ACCEPT: '.docx,.docm,.odt,.pdf,.txt,.md' };
+window.RCFiles = { prepare, ReadError, ACCEPT: '.pdf,.docx,.docm,.odt,.txt,.md,image/*' };
 })();

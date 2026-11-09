@@ -2,9 +2,9 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <title>レポート添削ペン</title>
-<meta name="description" content="大学レポートの具体性・分析と考察の深さ・出典・文体をチェックし、AI（Claude）が評価と相談に応じる添削アプリ">
+<meta name="description" content="レポートのファイル（PDF・Word・写真）や文章を送ると、AIが8つの観点で採点し、一覧表とコメントで返すチャット型の添削アプリ">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#F5F6F8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#11141A" media="(prefers-color-scheme: dark)">
@@ -18,147 +18,44 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div>
-      <h1>レポート<span>添削</span>ペン</h1>
-      <p class="lede">貼り付けたレポートや Word・PDF ファイルを、文体・具体性・分析と考察の深さ・出典の面からその場でチェックします。AI設定をすると、レポート専用AIによる観点別評価・AI生成らしさの判定・相談チャットが使えます。</p>
-    </div>
-    <div class="hdr-actions">
-      <button class="btn primary" id="openFile" type="button">ファイルを開く</button>
-      <input type="file" id="fileInput" hidden>
-      <button class="btn" id="sample" type="button">サンプルに戻す</button>
-      <button class="btn" id="clear" type="button">クリア</button>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><img src="icon.svg" alt="" width="30" height="30"><span>レポート<b>添削</b>ペン</span></div>
+    <div class="top-act">
+      <button class="btn" id="openRecords" type="button">採点の記録<span class="badge" id="recCount">0</span></button>
       <button class="btn" id="openSettings" type="button"><span class="dot" id="aiDot"></span>AI設定</button>
     </div>
-  </header>
-
-  <section class="panel task" aria-label="課題の情報">
-    <label class="field f-task" for="task">課題文（任意・AI評価の精度が上がります）
-      <textarea class="small" id="task" rows="2" placeholder="例：〇〇について、具体的な資料に基づいて論じなさい。"></textarea></label>
-    <label class="field" for="field">分野
-      <select id="field"><option>指定なし</option><option>人文学</option><option>社会科学</option><option>経済・経営</option><option>法学</option><option>教育学</option><option>心理学</option><option>理工学</option><option>情報</option><option>医療・看護・福祉</option><option>芸術</option></select></label>
-    <label class="field" for="level">水準
-      <select id="level"><option>学部1・2年</option><option>学部3・4年</option><option>卒業論文</option><option>大学院</option></select></label>
-    <label class="field" for="target">目標文字数
-      <input type="number" id="target" min="0" step="100" value="2000"></label>
-    <label class="field" for="style">文体
-      <select id="style"><option value="auto">自動判定</option><option value="dearu">だ・である調</option><option value="desu">です・ます調</option></select></label>
-  </section>
-
-  <div class="grid">
-    <section class="panel">
-      <div class="tabs" role="tablist" aria-label="本文">
-        <button class="tab" role="tab" id="tab-edit" aria-selected="false">本文を書く・貼る</button>
-        <button class="tab" role="tab" id="tab-view" aria-selected="true">添削ビュー</button>
-        <button class="tab" role="tab" id="tab-cmp" aria-selected="false" hidden>前後比較</button>
-        <span class="spacer"></span>
-        <span class="note" id="sampleNote">※ サンプル文を表示中</span>
-      </div>
-      <textarea class="paper" id="text" spellcheck="false" hidden placeholder="ここにレポート本文を貼り付けてください"></textarea>
-      <div class="paper" id="preview" role="tabpanel"></div>
-      <div id="cmpView" role="tabpanel" hidden></div>
-    </section>
-
-    <section class="panel side">
-      <div class="tabs" role="tablist" aria-label="結果">
-        <button class="tab" role="tab" data-pane="overview" aria-selected="true">概要</button>
-        <button class="tab" role="tab" data-pane="depth" aria-selected="false">深さ分析</button>
-        <button class="tab" role="tab" data-pane="pen" aria-selected="false">赤ペン<span class="badge" id="penCount">0</span></button>
-        <button class="tab" role="tab" data-pane="ai" aria-selected="false">AI評価</button>
-        <button class="tab" role="tab" data-pane="chat" aria-selected="false">AIに相談</button>
-        <button class="tab" role="tab" data-pane="hist" aria-selected="false">保存・比較<span class="badge" id="histCount">0</span></button>
-      </div>
-
-      <div class="body" data-pane="overview">
-        <div class="summary">
-          <div class="big"><span class="lbl">形式チェック</span><span class="num" id="score">–<small>/100</small></span><span class="verdict" id="verdict">–</span></div>
-          <div class="big"><span class="lbl">AI生成らしさ</span><span class="num" id="aiPct">–<small>%</small></span><span class="sub" id="aiPctSrc">–</span></div>
-        </div>
-        <div class="stats">
-          <div class="stat"><b id="stChars">0</b><span>文字数</span></div>
-          <div class="stat"><b id="stSent">0</b><span>文の数</span></div>
-          <div class="stat"><b id="stAvg">0</b><span>平均文長</span></div>
-          <div class="stat"><b id="stPara">0</b><span>段落</span></div>
-        </div>
-        <div class="stack"><div class="meter"><i id="meter"></i></div>
-          <div class="meter-label"><span id="meterL"></span><span id="meterR"></span></div></div>
-        <div class="stack"><h2>提出前チェックリスト</h2><div class="stack" id="checks"></div></div>
-        <div class="stack">
-          <h2>AI生成らしさの判定</h2>
-          <div class="gauge" id="gauge"></div>
-          <details id="featBox"><summary>文体統計の内訳</summary><div id="feats"></div></details>
-          <p class="caveat">AI生成らしさは文章の特徴からの推定で、確率の目安です。定型的な書き方の人の文章も高く出ることがあり、AIを使った証拠にはなりません。教員が判定に使う場合も、この数値だけで判断しないでください。</p>
-        </div>
-      </div>
-
-      <div class="body" data-pane="depth" hidden>
-        <p class="sub">1000字あたりの手がかり語・数値・引用の量から、内容の深さを0〜100で目安化しています。語の有無で測るため、内容の正しさは評価しません。正確な評価は「AI評価」を使ってください。</p>
-        <div class="stack" id="depthList"></div>
-      </div>
-
-      <div class="body" data-pane="pen" hidden>
-        <div class="legend"><span><i style="background:var(--pen)"></i>直すべき</span><span><i style="background:var(--warn)"></i>直した方がよい</span><span><i style="background:var(--info)"></i>見直し候補</span><span><i style="background:var(--ai)"></i>AIの指摘</span></div>
-        <div class="chips" id="chips"></div>
-        <div class="list" id="list"></div>
-      </div>
-
-      <div class="body" data-pane="ai" hidden>
-        <div class="ai-head">
-          <button class="btn ai" id="runEval" type="button">AIで評価する</button>
-          <button class="btn" id="stopEval" type="button" hidden>中止</button>
-          <span class="cost" id="evalCost"></span>
-        </div>
-        <div id="evalArea"><p class="empty">「AIで評価する」を押すと、レポート専用AIが8つの観点（問い・論証・分析・考察・具体性・出典・構成・表現）で採点し、優先して直すべき点とAI生成らしさを返します。本文はAnthropic社のAPIに送信されます。</p></div>
-      </div>
-
-      <div class="body" data-pane="chat" hidden>
-        <p class="sub">このレポートについて、添削AIに相談できます。代筆はせず、自分で直せるように導く方針です。</p>
-        <div class="suggest" id="suggest">
-          <button class="chip" type="button">序論の問いをはっきりさせるには？</button>
-          <button class="chip" type="button">考察が浅い箇所はどこ？</button>
-          <button class="chip" type="button">どんな資料を探せば根拠が強くなる？</button>
-          <button class="chip" type="button">予想される反論と応答の仕方は？</button>
-        </div>
-        <div class="chat" id="chat"></div>
-        <form class="composer" id="composer">
-          <textarea class="small" id="ask" rows="2" placeholder="質問を入力（Enterで改行、送信ボタンで送信）"></textarea>
-          <button class="btn ai" id="send" type="submit">送信</button>
-        </form>
-        <div class="row"><button class="btn" id="resetChat" type="button">会話をリセット</button><span class="cost" id="chatCost"></span></div>
-      </div>
-      <div class="body" data-pane="hist" hidden>
-        <div class="stack">
-          <h2>この版を保存</h2>
-          <div class="composer"><input type="text" id="verLabel" placeholder="版の名前（例：第1稿、先生のコメント反映後）"><button class="btn primary" id="saveVer" type="button">保存</button></div>
-          <p class="sub">本文・課題情報・その時点の評価（AI評価を実行していればその結果も）を、この端末に保存します。</p>
-        </div>
-        <div class="stack" id="cmpBox" hidden>
-          <h2>前後比較</h2>
-          <div class="cmp-pick">
-            <label class="field" for="cmpA">比較元（前）<select id="cmpA"></select></label>
-            <label class="field" for="cmpB">比較先（後）<select id="cmpB"></select></label>
-          </div>
-          <button class="btn ai" id="runCmp" type="button">比較する</button>
-        </div>
-        <div class="stack"><h2>保存した版</h2><div class="stack" id="histList"></div></div>
-        <div class="row" style="flex-wrap:wrap">
-          <button class="btn" id="exportBk" type="button">バックアップを書き出す</button>
-          <button class="btn" id="importBk" type="button">バックアップを読み込む</button>
-          <input type="file" id="bkInput" accept=".json,application/json" hidden>
-        </div>
-        <p class="sub">保存した版はこのブラウザの中にだけあります。機種変更やブラウザのデータ削除で消えるため、大事な版はバックアップを書き出してください。</p>
-      </div>
-    </section>
   </div>
+</header>
 
-  <footer>
-    <p>ファイルの読み取り・形式チェック・深さ分析・文体統計の判定・版の保存は、この端末の中だけで行います。「AI評価」「AIに相談」を使ったときだけ、本文と課題文が Anthropic 社の API に送信されます。</p>
-    <p>自動チェックは目安です。「AIっぽい言い回し」は禁止語ではなく、多いと中身の薄い文章に見えやすい表現の一覧です。最終判断は自分の目で。</p>
-  </footer>
+<main class="thread" id="thread" aria-live="polite"></main>
+
+<div class="dock">
+  <form class="composer" id="composer">
+    <div class="cond" id="cond" hidden>
+      <label class="field f-task" for="task">課題文（任意）
+        <textarea id="task" rows="2" placeholder="例：〇〇について、具体的な資料に基づいて論じなさい。"></textarea></label>
+      <label class="field" for="level">水準
+        <select id="level"><option>学部1・2年</option><option>学部3・4年</option><option>卒業論文</option><option>大学院</option></select></label>
+      <label class="field" for="field">分野
+        <select id="field"><option>指定なし</option><option>人文学</option><option>社会科学</option><option>経済・経営</option><option>法学</option><option>教育学</option><option>心理学</option><option>理工学</option><option>情報</option><option>医療・看護・福祉</option><option>芸術</option></select></label>
+      <label class="field" for="target">目標文字数
+        <input type="number" id="target" min="0" step="100" value="2000" inputmode="numeric"></label>
+    </div>
+    <div class="att" id="att" hidden></div>
+    <textarea id="input" rows="2" placeholder="レポート本文を貼り付けるか、ファイルを添付してください。採点後は質問もできます。"></textarea>
+    <div class="bar-row">
+      <button class="btn icon" id="attach" type="button" aria-label="ファイルを添付"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M16.5 6.5 8.4 14.6a2 2 0 0 0 2.8 2.8l8-8a4 4 0 0 0-5.6-5.6l-8.1 8.1a6 6 0 0 0 8.5 8.5L20 14.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="lbl">ファイル</span></button>
+      <input type="file" id="fileInput" multiple hidden>
+      <button class="btn ghost" id="condToggle" type="button" aria-expanded="false"><span id="condSummary">学部1・2年・2000字</span> ▾</button>
+      <span class="spacer"></span>
+      <button class="btn" id="askBtn" type="submit" value="ask" disabled>質問する</button>
+      <button class="btn pen" id="gradeBtn" type="submit" value="grade">採点する</button>
+    </div>
+  </form>
 </div>
 
-<div id="drop" hidden><div>ここにファイルをドロップ<small>Word（.docx）・PDF・OpenDocument（.odt）・テキスト</small></div></div>
+<div id="drop" hidden><div>ここにファイルをドロップ<small>PDF・Word（.docx）・写真やスキャン画像・テキスト</small></div></div>
 <div id="toast" class="toast" role="status" hidden></div>
 
 <dialog id="settings">
@@ -185,15 +82,27 @@
     <p class="sub" id="priceNote"></p>
     <div class="dlg-actions">
       <button class="btn" value="cancel" type="submit" formnovalidate>閉じる</button>
-      <button class="btn primary" value="save" type="submit" id="saveSettings">保存</button>
+      <button class="btn primary" value="save" type="submit">保存</button>
     </div>
   </form>
 </dialog>
 
-<script src="js/checks.js"></script>
-<script src="js/ai.js"></script>
+<dialog id="records">
+  <div class="dlg">
+    <div class="dlg-title"><h2>採点の記録</h2><button class="btn" id="closeRecords" type="button">閉じる</button></div>
+    <p class="sub">採点した結果は自動でこの端末に保存されます。2つ選ぶと点数の変化を比較できます。</p>
+    <div class="stack" id="recList"></div>
+    <div class="row wrap"><button class="btn ai" id="cmpRecords" type="button" disabled>選んだ2つを比較</button>
+      <span class="spacer"></span>
+      <button class="btn" id="exportBk" type="button">バックアップを書き出す</button>
+      <button class="btn" id="importBk" type="button">読み込む</button>
+      <input type="file" id="bkInput" accept=".json,application/json" hidden></div>
+    <div id="recCmp"></div>
+  </div>
+</dialog>
+
 <script src="js/files.js"></script>
-<script src="js/history.js"></script>
+<script src="js/ai.js"></script>
 <script src="js/app.js"></script>
 <script>
 if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
