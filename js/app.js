@@ -57,12 +57,36 @@ function aiIssues(text) {
 }
 
 /* ---------- 描画 ---------- */
-function render() {
-  const text = ta.value;
-  const res = analyze(text, $('style').value);
-  const doc = docChecks(text, res, +$('target').value || 0);
+/* 本文1つ分の評価指標（画面表示と版の保存で共通） */
+function measure(text, style, target) {
+  const res = analyze(text, style);
+  const doc = docChecks(text, res, target);
   const dep = depth(text);
   const local = aiLocal(text, res, res.issues, dep);
+  const w = { error: 4, warn: 2.5, info: 0.8 };
+  let pen = Math.min(60, res.issues.reduce((a, x) => a + w[x.sev], 0));
+  pen += doc.list.reduce((a, c) => a + (c.state === 'fail' ? 8 : c.state === 'part' ? 3 : 0), 0);
+  const score = text.trim() ? Math.max(0, Math.round(100 - pen)) : 0;
+  const cnt = sev => res.issues.filter(x => x.sev === sev).length;
+  const m = {
+    score, chars: doc.chars, sentences: res.body.length,
+    avgLen: res.body.length ? Math.round(res.body.reduce((a, s) => a + len(s.t), 0) / res.body.length) : 0,
+    issues: { error: cnt('error'), warn: cnt('warn'), info: cnt('info') },
+    depth: Object.fromEntries(dep.map(d => [d.key, d.score])),
+    aiLocal: local.percent,
+  };
+  return { res, doc, dep, local, score, m };
+}
+function evalSummary() {
+  if (!evalCurrent()) return null;
+  const d = state.evalResult.data;
+  return { score: d.overall.score, grade: d.overall.grade, ai: d.ai_likelihood ? d.ai_likelihood.percent : null,
+    crit: Object.fromEntries((d.criteria || []).map(c => [c.key, c.score])) };
+}
+
+function render() {
+  const text = ta.value;
+  const { res, doc, dep, local, score } = measure(text, $('style').value, +$('target').value || 0);
   state.lastLocalAi = local;
   state.issues = res.issues.concat(aiIssues(text)).sort((a, b) => (a.s < 0) - (b.s < 0) || a.s - b.s);
   const issues = state.issues;
@@ -90,11 +114,7 @@ function render() {
   $('meterR').textContent = doc.target ? `${doc.chars.toLocaleString()} / ${doc.target.toLocaleString()}字` : '';
 
   // 形式スコア
-  const w = { error: 4, warn: 2.5, info: 0.8, ai: 0 };
-  let pen = Math.min(60, res.issues.reduce((a, x) => a + w[x.sev], 0));
-  pen += doc.list.reduce((a, c) => a + (c.state === 'fail' ? 8 : c.state === 'part' ? 3 : 0), 0);
   const has = !!text.trim();
-  const score = has ? Math.max(0, Math.round(100 - pen)) : 0;
   const v = score >= 85 ? ['提出できる状態です', 'var(--ok)'] : score >= 65 ? ['もう一息', 'var(--warn)'] : ['要修正', 'var(--pen)'];
   $('score').innerHTML = `${has ? score : '–'}<small>/100</small>`;
   $('score').style.color = has ? v[1] : '';
@@ -108,6 +128,96 @@ function render() {
   renderEval();
   $('sampleNote').hidden = !state.usingSample;
   $('aiDot').classList.toggle('on', aiReady());
+  if (!$('cmpView').hidden && state.cmp && (state.cmp[0] === 'current' || state.cmp[1] === 'current')) renderCompare();
+}
+
+/* ---------- ファイルの読み込み ---------- */
+async function importFile(file) {
+  if (!file) return;
+  if (/\.json$/i.test(file.name)) return importBackup(file);
+  showToast(`「${file.name}」を読み取っています…`, 'busy');
+  try {
+    const text = await RCFiles.read(file);
+    if (ta.value.trim() && !state.usingSample) {
+      // 上書き前の本文を自動で版として残す
+      autoSave('読み込み前の本文（自動保存）');
+    }
+    ta.value = text; state.usingSample = false; state.filter = null;
+    render(); saveDraft(); setTab(true); renderHistory();
+    showToast(`「${file.name}」を読み込みました（${len(text).toLocaleString()}字）。読み取り結果に崩れがないか確認してください。`, 'ok');
+  } catch (e) {
+    showToast(e.message || '読み込みに失敗しました。', 'err');
+  }
+}
+let toastTimer;
+function showToast(msg, kind) {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast ' + (kind || ''); t.hidden = false;
+  clearTimeout(toastTimer);
+  if (kind !== 'busy') toastTimer = setTimeout(() => { t.hidden = true; }, kind === 'err' ? 8000 : 5000);
+}
+
+/* ---------- 保存と前後比較 ---------- */
+function snapshot(label) {
+  const text = ta.value;
+  const { m } = measure(text, $('style').value, +$('target').value || 0);
+  return { at: new Date().toISOString(), label: label || '', text, task: $('task').value, field: $('field').value,
+    level: $('level').value, target: $('target').value, style: $('style').value, m, ev: evalSummary() };
+}
+function autoSave(label) {
+  // 同じ本文がすでに保存されていれば重ねて保存しない
+  if (RCHistory.list().some(v => v.text === ta.value)) return;
+  try { RCHistory.add(snapshot(label)); } catch (_) {}
+}
+function currentAsVersion() { const v = snapshot('現在の本文'); v.current = true; v.id = 'current'; return v; }
+const fmtDate = iso => new Date(iso).toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+function renderHistory() {
+  const vs = RCHistory.list();
+  $('histCount').textContent = vs.length;
+  $('histList').innerHTML = vs.length ? vs.map(v => `<div class="ver" data-id="${v.id}">
+      <div class="ver-top"><b>${esc(v.label || '無題の版')}</b><span class="cost">${fmtDate(v.at)}</span></div>
+      <div class="ver-m"><span>形式 ${v.m.score}</span><span>${v.m.chars.toLocaleString()}字</span>${v.ev ? `<span>AI評価 ${v.ev.score}（${esc(v.ev.grade)}）</span>` : ''}${v.m.aiLocal != null ? `<span>AIらしさ ${v.ev && v.ev.ai != null ? v.ev.ai : v.m.aiLocal}%</span>` : ''}</div>
+      <div class="ver-act"><button class="btn sm" data-act="cmp" type="button">現在と比較</button><button class="btn sm" data-act="open" type="button">この版を開く</button><button class="btn sm" data-act="del" type="button">削除</button></div>
+    </div>`).join('') : '<p class="empty">まだ保存した版はありません。書き直す前に「この版を保存」を押しておくと、後で前後を比較できます。</p>';
+  const opts = '<option value="current">現在の本文</option>' + vs.map(v => `<option value="${v.id}">${esc(v.label || '無題の版')}（${fmtDate(v.at)}）</option>`).join('');
+  const a = $('cmpA').value, b = $('cmpB').value;
+  $('cmpA').innerHTML = opts; $('cmpB').innerHTML = opts;
+  $('cmpA').value = vs.some(v => v.id === a) ? a : (vs[0] ? vs[0].id : 'current');
+  $('cmpB').value = vs.some(v => v.id === b) ? b : 'current';
+  $('cmpBox').hidden = !vs.length;
+}
+function saveVersion() {
+  if (!ta.value.trim()) return showToast('本文が空です。', 'err');
+  try {
+    const v = RCHistory.add(snapshot($('verLabel').value.trim() || `第${RCHistory.list().length + 1}稿`));
+    $('verLabel').value = '';
+    renderHistory();
+    showToast(`「${v.label}」として保存しました。` + (v.ev ? 'AI評価の結果も一緒に保存しました。' : ''), 'ok');
+  } catch (e) { showToast(e.message, 'err'); }
+}
+function compare(aId, bId) {
+  state.cmp = [aId, bId];
+  renderCompare();
+  $('tab-cmp').hidden = false;
+  setTab('cmp');
+}
+function renderCompare() {
+  const pick = id => id === 'current' ? currentAsVersion() : RCHistory.get(id);
+  const a = pick(state.cmp[0]), b = pick(state.cmp[1]);
+  if (!a || !b) { $('cmpView').innerHTML = '<p class="empty">比較する版が見つかりません。</p>'; return; }
+  const labels = Object.fromEntries(depth('').map(d => [d.key, d.label]));
+  $('cmpView').innerHTML = RCHistory.compareHTML(a, b, labels);
+}
+function downloadBackup() {
+  const blob = new Blob([RCHistory.exportJSON()], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `tensaku-pen-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+async function importBackup(file) {
+  try { const n = RCHistory.importJSON(await file.text()); renderHistory(); showToast(`${n}件の版を取り込みました。`, 'ok'); }
+  catch (e) { showToast(e.message, 'err'); }
 }
 
 function renderAiGauge(local) {
@@ -272,9 +382,12 @@ $('settings').addEventListener('close', () => {
 
 /* ---------- タブ・操作 ---------- */
 function setTab(view) {
-  $('tab-edit').setAttribute('aria-selected', !view); $('tab-view').setAttribute('aria-selected', view);
-  ta.hidden = view; pv.hidden = !view;
-  if (!view) ta.focus();
+  const mode = view === 'cmp' ? 'cmp' : view ? 'view' : 'edit';
+  $('tab-edit').setAttribute('aria-selected', mode === 'edit');
+  $('tab-view').setAttribute('aria-selected', mode === 'view');
+  $('tab-cmp').setAttribute('aria-selected', mode === 'cmp');
+  ta.hidden = mode !== 'edit'; pv.hidden = mode !== 'view'; $('cmpView').hidden = mode !== 'cmp';
+  if (mode === 'edit') ta.focus();
 }
 function setPane(name) {
   document.querySelectorAll('.side .tab').forEach(t => t.setAttribute('aria-selected', t.dataset.pane === name));
@@ -328,10 +441,40 @@ $('runEval').onclick = runEval;
 $('stopEval').onclick = () => evalCtl && evalCtl.abort();
 $('composer').addEventListener('submit', e => { e.preventDefault(); sendChat($('ask').value); });
 $('suggest').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) sendChat(b.textContent); });
+$('tab-cmp').onclick = () => setTab('cmp');
+$('openFile').onclick = () => $('fileInput').click();
+$('fileInput').accept = RCFiles.ACCEPT + ',.json';
+$('fileInput').addEventListener('change', e => { importFile(e.target.files[0]); e.target.value = ''; });
+let dragDepth = 0;
+addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); dragDepth++; $('drop').hidden = false; } });
+addEventListener('dragover', e => { if ($('drop').hidden === false) e.preventDefault(); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
+addEventListener('drop', e => { if ($('drop').hidden) return; e.preventDefault(); dragDepth = 0; $('drop').hidden = true; importFile(e.dataTransfer.files[0]); });
+$('saveVer').onclick = saveVersion;
+$('verLabel').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveVersion(); } });
+$('runCmp').onclick = () => { if ($('cmpA').value === $('cmpB').value) return showToast('違う版を2つ選んでください。', 'err'); compare($('cmpA').value, $('cmpB').value); };
+$('exportBk').onclick = downloadBackup;
+$('importBk').onclick = () => $('bkInput').click();
+$('bkInput').addEventListener('change', e => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
+$('histList').addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const id = b.closest('.ver').dataset.id, v = RCHistory.get(id); if (!v) return;
+  if (b.dataset.act === 'cmp') compare(id, 'current');
+  else if (b.dataset.act === 'del') {
+    if (b.dataset.confirm) { RCHistory.remove(id); renderHistory(); }
+    else { b.dataset.confirm = '1'; b.textContent = '本当に削除'; b.classList.add('danger'); setTimeout(() => { if (b.isConnected) { delete b.dataset.confirm; b.textContent = '削除'; b.classList.remove('danger'); } }, 3000); }
+  } else if (b.dataset.act === 'open') {
+    if (ta.value.trim() && ta.value !== v.text && !state.usingSample) autoSave('開く前の本文（自動保存）');
+    ta.value = v.text; state.usingSample = false;
+    ['task', 'field', 'level', 'target', 'style'].forEach(k => { if (v[k] != null) $(k).value = v[k]; });
+    render(); saveDraft(); renderHistory(); setTab(true);
+    showToast(`「${v.label || '無題の版'}」を開きました。`, 'ok');
+  }
+});
 $('resetChat').onclick = () => { state.chatHistory = []; state.chatView = []; state.chatCostTotal = 0; renderChat(); };
 
 loadDraft();
-render(); renderChat();
+render(); renderChat(); renderHistory();
 let pane = 'overview'; try { pane = sessionStorage.getItem('rc-pane') || pane; } catch (_) {}
 setPane(pane);
 })();

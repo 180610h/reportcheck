@@ -22,9 +22,11 @@
   <header>
     <div>
       <h1>レポート<span>添削</span>ペン</h1>
-      <p class="lede">貼り付けたレポートを、文体・具体性・分析と考察の深さ・出典の面からその場でチェックします。AI設定をすると、レポート専用AIによる観点別評価・AI生成らしさの判定・相談チャットが使えます。</p>
+      <p class="lede">貼り付けたレポートや Word・PDF ファイルを、文体・具体性・分析と考察の深さ・出典の面からその場でチェックします。AI設定をすると、レポート専用AIによる観点別評価・AI生成らしさの判定・相談チャットが使えます。</p>
     </div>
     <div class="hdr-actions">
+      <button class="btn primary" id="openFile" type="button">ファイルを開く</button>
+      <input type="file" id="fileInput" hidden>
       <button class="btn" id="sample" type="button">サンプルに戻す</button>
       <button class="btn" id="clear" type="button">クリア</button>
       <button class="btn" id="openSettings" type="button"><span class="dot" id="aiDot"></span>AI設定</button>
@@ -49,11 +51,13 @@
       <div class="tabs" role="tablist" aria-label="本文">
         <button class="tab" role="tab" id="tab-edit" aria-selected="false">本文を書く・貼る</button>
         <button class="tab" role="tab" id="tab-view" aria-selected="true">添削ビュー</button>
+        <button class="tab" role="tab" id="tab-cmp" aria-selected="false" hidden>前後比較</button>
         <span class="spacer"></span>
         <span class="note" id="sampleNote">※ サンプル文を表示中</span>
       </div>
       <textarea class="paper" id="text" spellcheck="false" hidden placeholder="ここにレポート本文を貼り付けてください"></textarea>
       <div class="paper" id="preview" role="tabpanel"></div>
+      <div id="cmpView" role="tabpanel" hidden></div>
     </section>
 
     <section class="panel side">
@@ -63,6 +67,7 @@
         <button class="tab" role="tab" data-pane="pen" aria-selected="false">赤ペン<span class="badge" id="penCount">0</span></button>
         <button class="tab" role="tab" data-pane="ai" aria-selected="false">AI評価</button>
         <button class="tab" role="tab" data-pane="chat" aria-selected="false">AIに相談</button>
+        <button class="tab" role="tab" data-pane="hist" aria-selected="false">保存・比較<span class="badge" id="histCount">0</span></button>
       </div>
 
       <div class="body" data-pane="overview">
@@ -122,14 +127,39 @@
         </form>
         <div class="row"><button class="btn" id="resetChat" type="button">会話をリセット</button><span class="cost" id="chatCost"></span></div>
       </div>
+      <div class="body" data-pane="hist" hidden>
+        <div class="stack">
+          <h2>この版を保存</h2>
+          <div class="composer"><input type="text" id="verLabel" placeholder="版の名前（例：第1稿、先生のコメント反映後）"><button class="btn primary" id="saveVer" type="button">保存</button></div>
+          <p class="sub">本文・課題情報・その時点の評価（AI評価を実行していればその結果も）を、この端末に保存します。</p>
+        </div>
+        <div class="stack" id="cmpBox" hidden>
+          <h2>前後比較</h2>
+          <div class="cmp-pick">
+            <label class="field" for="cmpA">比較元（前）<select id="cmpA"></select></label>
+            <label class="field" for="cmpB">比較先（後）<select id="cmpB"></select></label>
+          </div>
+          <button class="btn ai" id="runCmp" type="button">比較する</button>
+        </div>
+        <div class="stack"><h2>保存した版</h2><div class="stack" id="histList"></div></div>
+        <div class="row" style="flex-wrap:wrap">
+          <button class="btn" id="exportBk" type="button">バックアップを書き出す</button>
+          <button class="btn" id="importBk" type="button">バックアップを読み込む</button>
+          <input type="file" id="bkInput" accept=".json,application/json" hidden>
+        </div>
+        <p class="sub">保存した版はこのブラウザの中にだけあります。機種変更やブラウザのデータ削除で消えるため、大事な版はバックアップを書き出してください。</p>
+      </div>
     </section>
   </div>
 
   <footer>
-    <p>形式チェック・深さ分析・文体統計の判定は、この端末の中だけで計算します。「AI評価」「AIに相談」を使ったときだけ、本文と課題文が Anthropic 社の API に送信されます。</p>
+    <p>ファイルの読み取り・形式チェック・深さ分析・文体統計の判定・版の保存は、この端末の中だけで行います。「AI評価」「AIに相談」を使ったときだけ、本文と課題文が Anthropic 社の API に送信されます。</p>
     <p>自動チェックは目安です。「AIっぽい言い回し」は禁止語ではなく、多いと中身の薄い文章に見えやすい表現の一覧です。最終判断は自分の目で。</p>
   </footer>
 </div>
+
+<div id="drop" hidden><div>ここにファイルをドロップ<small>Word（.docx）・PDF・OpenDocument（.odt）・テキスト</small></div></div>
+<div id="toast" class="toast" role="status" hidden></div>
 
 <dialog id="settings">
   <form class="dlg" method="dialog" id="settingsForm">
@@ -162,6 +192,8 @@
 
 <script src="js/checks.js"></script>
 <script src="js/ai.js"></script>
+<script src="js/files.js"></script>
+<script src="js/history.js"></script>
 <script src="js/app.js"></script>
 <script>
 if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
