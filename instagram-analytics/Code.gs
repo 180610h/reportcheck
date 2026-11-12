@@ -28,6 +28,8 @@ const SHEET = {
   CONSULT: '相談記録',
   COMMENTS: 'コメント',
   AUDIENCE: 'フォロワー属性',
+  TITLES: '伸びたタイトル集',
+  AI: 'AI用データ',
   OPTIONS: '選択肢',
   LOG: 'ログ',
 };
@@ -130,6 +132,17 @@ COLS[SHEET.AUDIENCE] = [
   { label: '割合', type: 'auto', format: '0.0%' },
 ];
 
+COLS[SHEET.TITLES] = [
+  { label: '追加日', type: 'manual', format: 'yyyy/mm/dd' },
+  { label: 'タイトル（冒頭テロップ）', type: 'manual' },
+  { label: '型', type: 'manual', options: '型' },
+  { label: '悩みテーマ', type: 'manual', options: '悩みテーマ' },
+  { label: '伸び方', type: 'manual', options: '伸び方', note: '拡散型＝多くの人に届いた / 価値型＝保存・シェアされた / 相談型＝プロフアクセスや相談につながった' },
+  { label: '根拠の数字', type: 'manual' },
+  { label: '伸びた理由の仮説', type: 'manual' },
+  { label: '横展開のアイデア', type: 'manual' },
+];
+
 COLS[SHEET.LOG] = [
   { label: '日時', type: 'auto', format: 'yyyy/mm/dd hh:mm:ss' },
   { label: '種別', type: 'auto' },
@@ -143,6 +156,7 @@ const OPTIONS = {
   '感情': ['寄り添い（共感）', '解決（すぐ使える）', '両方'],
   '相談の経路': ['Instagram→LP', 'Instagram→診断', 'InstagramのDM', 'その他'],
   '継続意向': ['はい', 'たぶん', 'いいえ', '未確認'],
+  '伸び方': ['拡散型', '価値型', '相談型'],
 };
 
 // 投稿のインサイト指標。core はまとめて取得、optional は1つずつ試す
@@ -168,6 +182,8 @@ function onOpen() {
     .addItem('④ 過去28日分の日次データを取り込む', 'backfillDailyManual')
     .addItem('⑤ 毎日の自動取得をオンにする', 'installTriggers')
     .addSeparator()
+    .addItem('分析担当AIに渡すデータを作る', 'exportForAI')
+    .addSeparator()
     .addItem('診断フォーム（Googleフォーム）を連携', 'promptFormUrl')
     .addItem('自動取得をオフにする', 'removeTriggers')
     .addToUi();
@@ -179,7 +195,7 @@ function setupSheets() {
   ss.setSpreadsheetTimeZone(TZ);
 
   setupOptionsSheet_(ss);
-  [SHEET.POSTS, SHEET.DAILY, SHEET.FUNNEL, SHEET.CONSULT, SHEET.COMMENTS, SHEET.AUDIENCE, SHEET.LOG].forEach(function (name) {
+  [SHEET.POSTS, SHEET.DAILY, SHEET.FUNNEL, SHEET.CONSULT, SHEET.COMMENTS, SHEET.TITLES, SHEET.AUDIENCE, SHEET.LOG].forEach(function (name) {
     ensureSheet_(ss, name);
   });
 
@@ -195,7 +211,19 @@ function setupSheets() {
 
 function setupOptionsSheet_(ss) {
   let sheet = ss.getSheetByName(SHEET.OPTIONS);
-  if (sheet) return; // 既にあればユーザーの編集を尊重して触らない
+  if (sheet) {
+    // 既存の選択肢はユーザーの編集を尊重して触らず、足りない項目の列だけ追加する
+    const heads = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0].map(String);
+    Object.keys(OPTIONS).forEach(function (k) {
+      if (heads.indexOf(k) !== -1) return;
+      const col = heads.filter(String).length + 1;
+      ensureCols_(sheet, col);
+      sheet.getRange(1, col, OPTIONS[k].length + 1, 1).setValues([[k]].concat(OPTIONS[k].map(function (v) { return [v]; })));
+      sheet.getRange(1, col).setFontWeight('bold').setBackground(COLOR_MANUAL);
+      heads[col - 1] = k;
+    });
+    return;
+  }
   sheet = ss.insertSheet(SHEET.OPTIONS);
   const keys = Object.keys(OPTIONS);
   const maxLen = Math.max.apply(null, keys.map(function (k) { return OPTIONS[k].length; }));
@@ -206,7 +234,7 @@ function setupOptionsSheet_(ss) {
   sheet.getRange(1, 1, values.length, keys.length).setValues(values);
   sheet.getRange(1, 1, 1, keys.length).setFontWeight('bold').setBackground(COLOR_MANUAL);
   sheet.setFrozenRows(1);
-  sheet.getRange(1, keys.length + 2).setValue('※ 選択肢は自由に追加・変更できます（各列の下に追記）');
+  sheet.getRange(1, keys.length + 2).setNote('選択肢は自由に追加・変更できます（各列の下に追記）');
 }
 
 function ensureSheet_(ss, name) {
@@ -721,6 +749,120 @@ function countFormResponsesByWeek_() {
     log_('WARN', '診断フォームの回答数を取得できませんでした: ' + e.message);
     return null;
   }
+}
+
+// ===== 分析担当AIに渡すデータ =====
+/**
+ * シートの中身を、AIにそのまま貼り付けられる文章（Markdown）にまとめる。
+ * 「AI用データ」シートのA1にも保存し、コピー用の画面を開く。
+ */
+function exportForAI() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const text = buildAISummary_(ss);
+  const sheet = ss.getSheetByName(SHEET.AI) || ss.insertSheet(SHEET.AI);
+  sheet.getRange(1, 1).setValue(text.length > 49000 ? text.slice(0, 49000) + '\n…（長すぎるため省略）' : text);
+
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:sans-serif">' +
+    '<p style="margin:0 0 8px">下のボタンでコピーして、分析担当AIへのメッセージに貼り付けてください（' + text.length.toLocaleString() + '文字）。</p>' +
+    '<textarea id="t" style="width:100%;height:380px;font-size:12px">' + esc + '</textarea>' +
+    '<button style="margin-top:8px;padding:8px 16px;font-size:14px" onclick="var t=document.getElementById(\'t\');t.select();document.execCommand(\'copy\');this.textContent=\'コピーしました\'">すべてコピー</button>' +
+    '</div>'
+  ).setWidth(760).setHeight(520);
+  SpreadsheetApp.getUi().showModalDialog(html, '分析担当AIに渡すデータ');
+}
+
+function buildAISummary_(ss) {
+  const today = new Date();
+  const fmtDate = function (d) { return d instanceof Date ? Utilities.formatDate(d, TZ, 'yyyy/MM/dd') : String(d || ''); };
+  const pct = function (v) { return v === '' || v === null || v === undefined || isNaN(Number(v)) ? '' : (Number(v) * 100).toFixed(1) + '%'; };
+  const n = function (v) { return v === '' || v === null || v === undefined ? '' : String(v); };
+  const cell = function (v) { return String(v === undefined || v === null ? '' : v).replace(/\r?\n/g, ' ').replace(/\|/g, '｜').trim(); };
+  const clip = function (v, len) { const s = cell(v); return s.length > len ? s.slice(0, len) + '…' : s; };
+  const table = function (headers, rows) {
+    if (!rows.length) return '（データなし）\n';
+    return '| ' + headers.join(' | ') + ' |\n|' + headers.map(function () { return '---'; }).join('|') + '|\n' +
+      rows.map(function (r) { return '| ' + r.map(cell).join(' | ') + ' |'; }).join('\n') + '\n';
+  };
+  const rowsOf = function (name) { const s = ss.getSheetByName(name); return s ? readTable_(s).rows : []; };
+  const out = [];
+
+  out.push('# 恋愛の家庭教師 Instagramデータ');
+  out.push('作成日: ' + fmtDate(today) + '（日本時間）\n');
+
+  // 今月の相談数
+  const consults = rowsOf(SHEET.CONSULT).filter(function (r) { return r['相談日'] instanceof Date; });
+  const ym = Utilities.formatDate(today, TZ, 'yyyy/MM');
+  const thisMonth = consults.filter(function (r) { return Utilities.formatDate(r['相談日'], TZ, 'yyyy/MM') === ym; }).length;
+  out.push('## 目標の進み具合');
+  out.push('- 今月（' + ym + '）の無料LINE相談: ' + thisMonth + '人 / 目標10人\n');
+
+  // 導線
+  const funnel = rowsOf(SHEET.FUNNEL).slice(-8);
+  out.push('## 導線（週次・直近8週）');
+  out.push('※リーチ合計は日別リーチの合計（重複あり）。空欄は未入力または取得できない数字。');
+  out.push(table(
+    ['週（月曜）', 'リーチ合計', '再生数合計', 'プロフ閲覧', 'フォロワー増減', 'LP閲覧', '診断回答', 'LINE追加(LP)', 'LINE追加(診断)', 'LINE追加(他)', '相談開始'],
+    funnel.map(function (r) {
+      return [fmtDate(r['週（月曜はじまり）']), n(r['リーチ合計']), n(r['再生数合計']), n(r['プロフィール閲覧合計']), n(r['フォロワー増減']), n(r['LP閲覧数']), n(r['診断回答数']), n(r['LINE追加（LP経由）']), n(r['LINE追加（診断経由）']), n(r['LINE追加（その他）']), n(r['相談開始数'])];
+    })
+  ));
+
+  // 投稿
+  const posts = rowsOf(SHEET.POSTS).filter(function (r) { return r['投稿ID'] !== ''; }).slice(0, 80);
+  const titleById = {};
+  posts.forEach(function (r) { titleById[String(r['投稿ID'])] = cell(r['冒頭テロップ']) || cell(r['キャプション1行目']); });
+  out.push('## 投稿一覧（新しい順・' + posts.length + '件）');
+  out.push('※タイトル＝冒頭テロップ（未入力ならキャプション1行目）。経過日数3日未満は数字がまだ伸びている途中。NG＝ブランドNG表現あり。');
+  out.push(table(
+    ['No', '投稿日', '経過日数', '種類', 'タイトル', 'カバー文字', '型', '悩みテーマ', '自分ごと感', '感情', 'NG', '再生数', 'リーチ', 'いいね', 'コメント', '保存', 'シェア', '保存率', 'シェア率', '平均視聴秒', '3秒維持率', 'プロフアクセス', 'フォロー', '相談数'],
+    posts.map(function (r, i) {
+      const d = r['投稿日'];
+      const days = d instanceof Date ? Math.floor((today.getTime() - d.getTime()) / DAY_MS) : '';
+      return [i + 1, fmtDate(d), days, r['種類'], titleById[String(r['投稿ID'])], clip(r['カバー文字'], 40), r['型'], r['悩みテーマ'], r['自分ごと感'], r['感情'], r['ブランドNG表現'] === true ? 'NG' : '',
+        n(r['再生数']), n(r['リーチ']), n(r['いいね']), n(r['コメント']), n(r['保存']), n(r['シェア']), pct(r['保存率']), pct(r['シェア率']), n(r['平均視聴秒数']), pct(r['3秒維持率']), n(r['プロフアクセス(取れれば)']), n(r['フォロー(取れれば)']), n(r['相談につながった数'])];
+    })
+  ));
+
+  // 相談記録
+  const postByUrl = posts.map(function (r) { return { code: shortcode_(r['URL']), title: titleById[String(r['投稿ID'])] }; });
+  const recentConsults = consults.filter(function (r) { return today.getTime() - r['相談日'].getTime() <= 60 * DAY_MS; });
+  out.push('## 相談記録（直近60日・' + recentConsults.length + '件）');
+  out.push(table(
+    ['相談日', '経路', '見た動画', '悩みテーマ', '相談者の言葉', '状況・アドバイスした一歩', '継続意向', '学び・メモ'],
+    recentConsults.map(function (r) {
+      const w = String(r['見た動画'] || '');
+      const hit = postByUrl.filter(function (p) { return p.code && w.indexOf(p.code) !== -1; })[0];
+      return [fmtDate(r['相談日']), r['経路'], hit ? hit.title : clip(w, 40), r['悩みテーマ'], clip(r['相談者の言葉（そのまま）'], 150), clip(r['状況・アドバイスした一歩'], 150), r['継続して相談したいか'], clip(r['学び・メモ'], 150)];
+    })
+  ));
+
+  // コメント
+  const comments = rowsOf(SHEET.COMMENTS).filter(function (r) { return r['日時'] instanceof Date && today.getTime() - r['日時'].getTime() <= 30 * DAY_MS; }).slice(0, 60);
+  out.push('## コメント（直近30日・' + comments.length + '件）');
+  out.push(table(['日付', '投稿', 'コメント本文', '悩みテーマ'], comments.map(function (r) {
+    return [fmtDate(r['日時']), clip(titleById[String(r['投稿ID'])] || r['投稿のタイトル'], 30), clip(r['本文'], 150), r['悩みテーマ']];
+  })));
+
+  // フォロワー属性（最新）
+  const aud = rowsOf(SHEET.AUDIENCE);
+  if (aud.length) {
+    const lastDay = fmtDate(aud[aud.length - 1]['取得日']);
+    out.push('## フォロワー属性（' + lastDay + '時点）');
+    out.push(aud.filter(function (r) { return fmtDate(r['取得日']) === lastDay; }).map(function (r) { return '- ' + r['区分'] + ' ' + r['項目'] + ': ' + pct(r['割合']); }).join('\n') + '\n');
+  } else {
+    out.push('## フォロワー属性\n（未取得：フォロワー100人未満の可能性）\n');
+  }
+
+  // 伸びたタイトル集
+  const titles = rowsOf(SHEET.TITLES).filter(function (r) { return r['タイトル（冒頭テロップ）'] !== ''; });
+  out.push('## これまでの伸びたタイトル集（' + titles.length + '件）');
+  out.push(table(['追加日', 'タイトル', '型', '悩みテーマ', '伸び方', '根拠の数字', '理由の仮説'], titles.map(function (r) {
+    return [fmtDate(r['追加日']), r['タイトル（冒頭テロップ）'], r['型'], r['悩みテーマ'], r['伸び方'], clip(r['根拠の数字'], 60), clip(r['伸びた理由の仮説'], 100)];
+  })));
+
+  return out.join('\n');
 }
 
 // ===== 自動実行 =====
